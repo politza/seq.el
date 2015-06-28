@@ -297,5 +297,37 @@ Evaluate BODY for each created sequence.
       (should (null b))
       (should (null c)))))
 
+(ert-deftest test-seq-edit-distance ()
+  (with-test-sequences (seq1   '(1 2 3))
+    (with-test-sequences (seq2 '(1 4 3))
+      (should (equal (seq-edit-distance seq1 seq2)
+                     '(1 (1 . 1) (2 . 4) (3 . 3))))
+      (should (equal (seq-edit-distance seq1 seq2 1)
+                     '(1 (1 . 1) (2 . 4) (3 . 3))))
+      ;; score-only
+      (should (equal (seq-edit-distance seq1 seq2 nil nil t) 1))))
+  (with-test-sequences (seq1 '(1 2 3 4))
+    (with-test-sequences (seq2 '(1 3 2 4))
+      ;; allow transposition
+      (should (equal (seq-edit-distance seq1 seq2 nil t)
+                     '(1 (1 . 1) (2 . 3) (3 . 2) (4 . 4)))))))
+
+(ert-deftest test-seq-alignment ()
+  (with-test-sequences (seq1     '(1 2 2 4))
+    (with-test-sequences (seq2 '(0 1 3 3 4 5))
+      (should (equal (seq-alignment seq1 seq2)
+                     '(-2 (nil . 0) (1 . 1) (2 . 3) (2 . 3) (4 . 4) (nil . 5))))
+      ;; suffix matching
+      (should (equal (seq-alignment seq1 seq2 nil 'suffix)
+                     '(-1 (nil . 0) (1 . 1) (2 . 3) (2 . 3) (4 . 4) (nil . 5))))
+      ;; prefix matching
+      (should (equal (seq-alignment seq1 seq2 nil 'prefix)
+                     '(-1 (nil . 0) (1 . 1) (2 . 3) (2 . 3) (4 . 4) (nil . 5))))
+      ;; infix matching
+      (should (equal (seq-alignment seq1 seq2 nil 'infix)
+                     '(0 (nil . 0) (1 . 1) (2 . 3) (2 . 3) (4 . 4) (nil . 5))))
+      ;; score-only
+      (should (equal (seq-alignment seq1 seq2 nil nil t) -2)))))
+
 (provide 'seq-tests)
 ;;; seq-tests.el ends here
