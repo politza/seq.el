@@ -325,6 +325,17 @@ TYPE can be one of the following symbols: vector, string or list."
     (`list (append seq nil))
     (t (error "Not a sequence type name: %S" type))))
 
+(defun seq-type (seq)
+  "Determine the type of SEQ.
+
+Return one of the symbols list, vector, string or nil, if SEQ is
+not a sequence."
+
+  (cond
+   ((listp seq) 'list)
+   ((stringp seq) 'string)
+   ((vectorp seq) 'vector)))
+
 (defun seq--drop-list (list n)
   "Return a list from LIST without its first N elements.
 This is an optimization for lists in `seq-drop'."
