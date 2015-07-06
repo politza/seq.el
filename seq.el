@@ -341,22 +341,25 @@ TYPE can be one of the following symbols: vector, string or list."
 
 (defun seq-alignment (seq1 seq2 &optional
                            similarity-fn
+                           gap-penalty
                            alignment-type
-                           score-only-p)
+                           score-only-p
+                           gap-symbol)
   "Return an alignment of sequences SEQ1 and SEQ2.
 
 SIMILARITY-FN should be a function. It is called with two
 arguments: One element from SEQ1 and one from SEQ2 and it should
 return a number determining how similar the elements are, where
 higher values mean `more similar'.  The default returns 1 if the
-elements are equal, else -1.  The gap-costs for
-insertion/deletions are fixed at -1.
+elements are equal, else -1.
+
+GAP-PENALTY is the penalty for one single gap in the alignment,
+the default is -1.
 
 ALIGNMENT-TYPE may be one of the symbols `prefix', `suffix',
 `infix' or nil.  If it is `prefix' \(resp. `suffix'\), trailing
-\(resp. preceding\) elements in SEQ2 may be ignored; `infix' is
-the combination of both.  The default is nil, which means to
-match the whole sequence.
+\(resp. preceding\) elements in SEQ2 may be ignored, i.e. deleted
+without incurring a penalty; `infix' is the combination of both.
 
 Return a cons \(SCORE . ALINGMENT\), unless SCORE-ONLY-P is
 non-nil, in which case only SCORE is returned.  SCORE says how
@@ -367,27 +370,32 @@ respective sequence in the alignment."
 
   ;; See https://en.wikipedia.org/wiki/Needleman-Wunsch_algorithm
   (seq--with-matrix-macros
-    (let* ((nil-value nil)
-           (len1 (length seq1))
+    (let* ((len1 (length seq1))
            (len2 (length seq2))
            (d (make-matrix (1+ len1) (1+ len2)))
            (prefix-p (memq alignment-type '(prefix infix)))
-           (suffix-p (memq alignment-type '(suffix infix)))
-           (similarity-fn (or similarity-fn
-                              (lambda (a b)
-                                (if (equal a b) 1 -1)))))
+           (suffix-p (memq alignment-type '(suffix infix))))
+      
+      (unless similarity-fn
+        (setq similarity-fn
+              (lambda (a b)
+                (if (equal a b) 1 -1))))
+      (unless gap-penalty
+        (setq gap-penalty -1))
 
       (cl-loop for i from 0 to len1 do
-        (mset d i 0 (- i)))
+        (mset d i 0 (* i gap-penalty)))
       (cl-loop for j from 0 to len2 do
-        (mset d 0 j (if suffix-p 0 (- j))))
+        (mset d 0 j (if suffix-p 0 (* j gap-penalty))))
 
       (cl-loop for i from 1 to len1 do
         (cl-loop for j from 1 to len2 do
           (let ((max (max
-                      (+ (mref d (1- i) j) -1)
+                      (+ (mref d (1- i) j) gap-penalty)
                       (+ (mref d i (1- j))
-                         (if (and prefix-p (= i len1)) 0 -1))
+                         (if (and prefix-p (= i len1))
+                             0
+                           gap-penalty))
                       (+ (mref d (1- i) (1- j))
                          (funcall similarity-fn
                                   (elt seq1 (1- i))
@@ -404,17 +412,19 @@ respective sequence in the alignment."
             (cond
              ((and (> i 0)
                    (= (mref d i j)
-                      (+ (mref d (1- i) j) -1)))
+                      (+ (mref d (1- i) j)
+                         gap-penalty)))
               (cl-decf i)
-              (push (cons (elt seq1 i) nil-value) alignment))
+              (push (cons (elt seq1 i) gap-symbol) alignment))
              ((and (> j 0)
                    (= (mref d i j)
                       (+ (mref d i (1- j))
                          (if (or (and (= i 0) suffix-p)
                                  (and (= i len1) prefix-p))
-                             0 -1))))
+                             0
+                           gap-penalty))))
               (cl-decf j)
-              (push (cons nil-value (elt seq2 j)) alignment))
+              (push (cons gap-symbol (elt seq2 j)) alignment))
              (t
               (cl-assert (and (> i 0) (> j 0)) t)
               (cl-decf i)
@@ -422,6 +432,242 @@ respective sequence in the alignment."
               (push (cons (elt seq1 i)
                           (elt seq2 j)) alignment))))
           (cons (mref d len1 len2) alignment))))))
+
+(defun seq-upgma-test ()
+  (seq--with-matrix-macros
+   (let ((d [[nil nil nil nil nil nil nil]
+             [19.0 nil nil nil nil nil nil]
+             [27.0 31.0 nil nil nil nil nil]
+             [8.0 18.0 26.0 nil nil nil nil]
+             [33.0 36.0 41.0 31.0 nil nil nil]
+             [18.0 1.0 32.0 17.0 35.0 nil nil]
+             [13.0 13.0 29.0 14.0 28.0 12.0 nil]]))
+     (seq-upgma [A B C D E F G]
+                (lambda (i j)
+                  (mref d j i))))))
+
+(defun seq-upgma (seq distance-fn)
+  (seq--with-matrix-macros
+    (let* ((len (length seq))
+           (dist (make-matrix len len 0.0))
+           (m (make-matrix len len 0.0))
+           (indices (number-sequence 0 (1- len)))
+           (tree (apply 'vector indices))
+           (joined (apply 'vector (mapcar 'list indices))))
+      (cl-loop for i from 0 below len do
+        (cl-loop for j from (1+ i) below len do
+          (mset m i j (funcall distance-fn i j))
+          (mset dist i j (mref m i j))))
+      (cl-labels
+        (;; (print ()
+         ;;   (with-output-to-string
+         ;;     (cl-loop for li on indices do 
+         ;;       (let ((i (car li)))
+         ;;         (cl-loop for lj on (cdr li) do
+         ;;           (let ((j (car lj)))
+         ;;             (princ (format "%5.2f " (mref m i j)))))
+         ;;         (terpri)))))
+         (dmin ()
+           (let (min min-nth)
+             (cl-loop for li on indices do
+               (let ((i (car li)))
+                 (cl-loop for lj on (cdr li) do
+                   (let* ((j (car lj))
+                          (d (mref m i j)))
+                     (when (or (null min)
+                               (< d min))
+                       (setq min d
+                             min-nth (list i j)))))))
+             min-nth))
+         (join (i j)
+           (aset tree i (cons (aref tree i)
+                              (aref tree j)))
+           (aset tree j nil)
+           (aset joined i (append (aref joined i)
+                                  (aref joined j)))
+           (setq indices (delq j indices))
+           (cl-loop for k in indices do
+             (when (/= k i)
+               (let ((s 0.0)
+                     (l 0))
+                 (cl-loop for x in (aref joined i) do
+                   (cl-loop for y in (aref joined k) do
+                     (cl-incf s (mref dist (min x y) (max x y)))
+                     (cl-incf l)))
+                 (mset m (min k i) (max k i) (/ s l)))))))
+        (dotimes (_ (1- len))
+          (apply #'join (dmin)))
+        (car (remq nil (append tree nil)))))))
+
+(comment
+  (seq-multi-alignment
+   '((a b c)
+     (d e f g)
+     (a d b c))))
+
+(defun seq-multi-alignment--effective-scores (seqs &optional similarity-fn gap-penalty)
+  (seq--with-matrix-macros
+    (let* ((len (length seqs))
+           (scores (make-matrix len len nil))
+           (auto-scores (make-vector len nil))
+           (i 0))
+      (cl-loop for s in seqs do
+        (aset auto-scores i (seq-alignment
+                             s s similarity-fn gap-penalty nil t))
+        (cl-incf i))
+      (setq i 0)
+      (cl-loop for rest on seqs do
+        (let ((s1 (car rest))
+              (j (1+ i)))
+          (cl-loop for s2 in (cdr rest) do
+            (let ((s (seq-alignment
+                      s1 s2 similarity-fn gap-penalty nil t))
+                  (smax (/ (+ (aref auto-scores i)
+                              (aref auto-scores j))
+                           2.0))
+                  (srand (seq-alignment (seq-shuffle s1)
+                                        (seq-shuffle s2)
+                                        similarity-fn
+                                        gap-penalty nil t)))
+              (mset scores i j
+                    (- (log (max 0 (/ (float (- s srand)) (- smax srand)))))))
+            (cl-incf j))
+          (cl-incf i)))
+      scores)))
+  
+(defun seq-multi-alignment--guide-tree (seqs &optional similarity-fn gap-penalty)
+  (let ((scores (seq-multi-alignment--effective-scores
+                 seqs similarity-fn gap-penalty)))
+    (seq-upgma seqs (lambda (i j)
+                      (mref scores i j)))))
+      
+(defun seq-multi-alignment--align (tree sequences score-fn gap-penalty gap-symbol)
+  (if (numberp tree)
+      (list (elt sequences tree))
+    (let* ((groups (list (seq-multi-alignment--align
+                          (car tree) sequences score-fn
+                          gap-penalty gap-symbol)
+                         (seq-multi-alignment--align
+                          (cdr tree) sequences score-fn
+                          gap-penalty gap-symbol)))
+           (group-ncolumns (list (length (car (elt groups 0)))
+                                 (length (car (elt groups 1)))))
+           (group-sizes (list (length (elt groups 0))
+                              (length (elt groups 1))))
+           (pair-score-fn (lambda (col1 col2)
+                            (let ((score 0))
+                              (seq-doseq (s1 (car groups))
+                                (seq-doseq (s2 (cadr groups))
+                                  (cl-incf score
+                                           (funcall score-fn
+                                                    (elt s1 col1)
+                                                    (elt s2 col2)))))
+                              score)))
+           (alignment (cdr (seq-alignment
+                            (number-sequence 0 (1- (elt group-ncolumns 0)))
+                            (number-sequence 0 (1- (elt group-ncolumns 1)))
+                            pair-score-fn gap-penalty)))
+           (aligned (list (make-list (elt group-sizes 0) nil)
+                          (make-list (elt group-sizes 1) nil))))
+      (dolist (elt alignment)
+        (dotimes (i 2)
+          (if-let ((idx (if (= i 0) (car elt) (cdr elt))))
+              (cl-loop for sg on (elt groups i)
+                for cons on (elt aligned i) do
+                (push (pop (car sg)) (car cons)))
+            (cl-loop for cons on (elt aligned i) do
+              (push gap-symbol (car cons))))))
+      (append (mapcar 'reverse (elt aligned 0))
+              (mapcar 'reverse (elt aligned 1))))))
+
+(defun seq-multi-alignment (sequences &optional score-fn gap-penalty gap-symbol)
+  (unless score-fn
+    (setq score-fn (lambda (elt1 elt2) (if (equal elt1 elt2) 1 -1))))
+  (unless gap-penalty
+    (setq gap-penalty -1))
+  (let* ((tree (seq-multi-alignment--guide-tree
+                sequences score-fn gap-penalty))
+         (hash (make-hash-table :test 'equal))
+         (multi-score-fn
+          (lambda (elt1 elt2)
+            (cond
+             ((and (eq elt1 gap-symbol)
+                   (eq elt2 gap-symbol)) 0)
+             ((or (eq elt1 gap-symbol)
+                  (eq elt2 gap-symbol)) gap-penalty)
+             (t
+              (let* ((key (list elt1 elt2))
+                     (score (gethash key hash)))
+                (unless score
+                  (setq score (funcall score-fn elt1 elt2))
+                  (puthash key score hash)
+                  (puthash (reverse key) score hash))
+                score))))))
+    (seq-multi-alignment--align
+     tree sequences multi-score-fn gap-penalty gap-symbol)))
+    
+
+(defun seq-shuffle (seq)
+  (let ((vec (if (vectorp seq)
+                 (copy-sequence seq)
+               (apply 'vector (append seq nil)))))
+    (cl-loop for i from (1- (length vec)) downto 1 do
+      (let* ((j (random i))
+             (tmp (aref vec j)))
+        (aset vec j (aref vec i))
+        (aset vec i tmp)))
+    vec))      
+
+(defun seq-multi-alignment-display (sequences &optional score-fn gap-penalty gap-symbol)
+  (interactive)
+  (let* ((ses-initial-column-width 16)
+         (aligned (seq-multi-alignment
+                   sequences score-fn gap-penalty gap-symbol))
+         (col 0)
+         (widths (make-list (length (car aligned)) 0))
+         (cells (mapconcat
+                 (lambda (s)
+                   (setq col 0)
+                   (mapconcat (lambda (elt)
+                                (let ((str (replace-regexp-in-string
+                                            "[\t\n]"
+                                            (lambda (m)
+                                              (if (equal m "\n")
+                                                  "\\n"
+                                                "\\t"))
+                                            (prin1-to-string elt)
+                                            t t)))
+                                  (setf (elt widths col)
+                                        (max (elt widths col)
+                                             (length str)))
+                                  (cl-incf col)
+                                  str))
+                              s "\t"))
+                 aligned "\n")))
+    (with-current-buffer (get-buffer-create "*Alignment*")
+      (let ((inhibit-read-only t))
+        (erase-buffer))
+      (ses-mode)
+      (cl-letf (((symbol-function 'y-or-n-p)
+                 (lambda (&rest _) t)))
+        (ses-yank-tsf cells nil))
+      (dotimes (col (length widths))
+        (ses-set-column-width col (+ (elt widths col))))
+      (ses-command-hook)
+      (pop-to-buffer (current-buffer)))))
+
+(setq sequences
+      (list
+       (split-string "if [ $# -ne 1 ]; then echo \"usage:eunalias NAME\" return 1; fi" " +" t)
+       (split-string "if [ $# -ne 1 ]; then echo \"usage:eunalias NAME\" return 1; fi" " +" t)
+       (split-string "if [ $# -gt 1 ]; then echo \"usage:$FUNCNAME [name]\" >&2 return 1 fi" " +" t)
+       (split-string "if [ $# -gt 1 ]; then echo \"usage:$FUNCNAME [name]\" >&2 return 1 fi" " +" t)
+       (split-string "if [ -z \"$spec\" ]; then echo \"No such alias: $name\" >&2 return 1 fi" " +" t)
+       (split-string "if [ -z \"$spec\" ]; then echo \"No such alias: $name\" >&2 return 1 fi" " +" t)
+       (split-string "if [ -z \"$spec\" ]; then echo \"No such alias: $name\" >&2 return 1; fi" " +" t)
+       (split-string "if [ -z \"$spec\" ]; then echo \"No such alias: $name\" >&2 return 1; fi" " +" t)
+       (split-string "if [ \"$fn\" == \"$spec\" ]; then eargs= fi" " +" t)
+       (split-string "if [ \"$fn\" == \"$spec\" ]; then eargs= fi" " +" t)))
 
 (defun seq-edit-distance (seq1 seq2 &optional
                                max-distance
