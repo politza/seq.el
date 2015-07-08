@@ -342,7 +342,7 @@ TYPE can be one of the following symbols: vector, string or list."
 (defun seq-alignment (seq1 seq2 &optional
                            similarity-fn
                            gap-penalty
-                           alignment-type
+                           _alignment-type
                            score-only-p
                            gap-symbol)
   "Return an alignment of sequences SEQ1 and SEQ2.
@@ -372,9 +372,7 @@ respective sequence in the alignment."
   (seq--with-matrix-macros
     (let* ((len1 (length seq1))
            (len2 (length seq2))
-           (d (make-matrix (1+ len1) (1+ len2)))
-           (prefix-p (memq alignment-type '(prefix infix)))
-           (suffix-p (memq alignment-type '(suffix infix))))
+           (d (make-matrix (1+ len1) (1+ len2))))
       
       (unless similarity-fn
         (setq similarity-fn
@@ -386,16 +384,14 @@ respective sequence in the alignment."
       (cl-loop for i from 0 to len1 do
         (mset d i 0 (* i gap-penalty)))
       (cl-loop for j from 0 to len2 do
-        (mset d 0 j (if suffix-p 0 (* j gap-penalty))))
+        (mset d 0 j (* j gap-penalty)))
 
       (cl-loop for i from 1 to len1 do
         (cl-loop for j from 1 to len2 do
           (let ((max (max
                       (+ (mref d (1- i) j) gap-penalty)
                       (+ (mref d i (1- j))
-                         (if (and prefix-p (= i len1))
-                             0
-                           gap-penalty))
+                         gap-penalty)
                       (+ (mref d (1- i) (1- j))
                          (funcall similarity-fn
                                   (elt seq1 (1- i))
@@ -414,15 +410,14 @@ respective sequence in the alignment."
                    (= (mref d i j)
                       (+ (mref d (1- i) j)
                          gap-penalty)))
+              (cl-assert (> i 0) t)
               (cl-decf i)
               (push (cons (elt seq1 i) gap-symbol) alignment))
              ((and (> j 0)
                    (= (mref d i j)
                       (+ (mref d i (1- j))
-                         (if (or (and (= i 0) suffix-p)
-                                 (and (= i len1) prefix-p))
-                             0
-                           gap-penalty))))
+                         gap-penalty)))
+              (cl-assert (> j 0) t)
               (cl-decf j)
               (push (cons gap-symbol (elt seq2 j)) alignment))
              (t
@@ -433,6 +428,201 @@ respective sequence in the alignment."
                           (elt seq2 j)) alignment))))
           (cons (mref d len1 len2) alignment))))))
 
+(defun seq-ralignment (seq1 seq2 &optional
+                            similarity-fn
+                            gap-penalty
+                            _alignment-type
+                            score-only-p
+                            gap-symbol)
+  ;; See https://en.wikipedia.org/wiki/Needleman-Wunsch_algorithm
+  (seq--with-matrix-macros
+    (let* ((len1 (length seq1))
+           (len2 (length seq2))
+           (d (make-matrix (1+ len1) (1+ len2))))
+      
+      (unless similarity-fn
+        (setq similarity-fn
+              (lambda (a b)
+                (if (equal a b) 1 -1000))))
+      (unless gap-penalty
+        (setq gap-penalty -1))
+
+      (cl-loop for i from 0 to len1 do
+        (mset d i 0 (* i gap-penalty)))
+      (cl-loop for j from 0 to len2 do
+        (mset d 0 j (* j gap-penalty)))
+
+      (cl-loop for i from 1 to len1 do
+        (cl-loop for j from 1 to len2 do
+          (let ((max (max
+                      (+ (mref d (1- i) j) gap-penalty)
+                      (+ (mref d i (1- j))
+                         gap-penalty)
+                      (+ (mref d (1- i) (1- j))
+                         (let ((s1 (elt seq1 (1- i)))
+                               (s2 (elt seq2 (1- j))))
+                           (if (and (consp s1)
+                                    (consp s2))
+                               (seq-ralignment
+                                s1 s2 similarity-fn gap-penalty nil t gap-symbol)
+                             (funcall similarity-fn s1 s2)))))))
+            (mset d i j max))))
+
+      (if score-only-p
+          (mref d len1 len2)
+        (let ((i len1)
+              (j len2)
+              alignment)
+          (while (or (> i 0)
+                     (> j 0))
+            (cond
+             ((and (> i 0)
+                   (= (mref d i j)
+                      (+ (mref d (1- i) j)
+                         gap-penalty)))
+              (cl-assert (> i 0) t)
+              (cl-decf i)
+              (push (cons (elt seq1 i) gap-symbol) alignment))
+             ((and (> j 0)
+                   (= (mref d i j)
+                      (+ (mref d i (1- j))
+                         gap-penalty)))
+              (cl-assert (> j 0) t)
+              (cl-decf j)
+              (push (cons gap-symbol (elt seq2 j)) alignment))
+             (t
+              (cl-assert (and (> i 0) (> j 0)) t)
+              (cl-decf i)
+              (cl-decf j)
+              (let ((s1 (elt seq1 i))
+                    (s2 (elt seq2 j)))
+                (push
+                 (if (and (consp s1)
+                          (consp s2))
+                     (cons :rec
+                       (cdr
+                        (seq-ralignment
+                         s1 s2 similarity-fn gap-penalty nil nil gap-symbol)))
+                   (cons s1 s2))
+                 alignment)))))
+          (cons (mref d len1 len2) alignment))))))
+
+(defun seq-merge (seq1 seq2 &optional
+                       similarity-fn
+                       gap-penalty
+                       score-only-p)
+  ;; See https://en.wikipedia.org/wiki/Needleman-Wunsch_algorithm
+  (seq--with-matrix-macros
+    (let* ((len1 (length seq1))
+           (len2 (length seq2))
+           (d (make-matrix (1+ len1) (1+ len2))))
+      
+      (unless similarity-fn
+        (setq similarity-fn
+              (lambda (a b)
+                (if (equal a b) 1 0))))
+      (unless gap-penalty
+        (setq gap-penalty 0))
+
+      (cl-loop for i from 0 to len1 do
+        (mset d i 0 (* i gap-penalty)))
+      (cl-loop for j from 0 to len2 do
+        (mset d 0 j (* j gap-penalty)))
+
+      (cl-loop for i from 1 to len1 do
+        (cl-loop for j from 1 to len2 do
+          (let ((max (max
+                      (+ (mref d (1- i) j) gap-penalty)
+                      (+ (mref d i (1- j))
+                         gap-penalty)
+                      (+ (mref d (1- i) (1- j))
+                         (let ((s1 (elt seq1 (1- i)))
+                               (s2 (elt seq2 (1- j))))
+                           (if (and (consp s1)
+                                    (consp s2))
+                               (seq-merge
+                                s1 s2 similarity-fn gap-penalty t)
+                             (funcall similarity-fn s1 s2)))))))
+            (mset d i j max))))
+
+      (if score-only-p
+          (mref d len1 len2)
+        (let ((i len1)
+              (j len2)
+              (gap-symbol '$)
+              merged)
+          (while (or (> i 0)
+                     (> j 0))
+            (cond
+             ((and (> i 0)
+                   (= (mref d i j)
+                      (+ (mref d (1- i) j)
+                         gap-penalty)))
+              (cl-assert (> i 0) t)
+              (cl-decf i)
+              (unless (eq (car merged)
+                          gap-symbol)
+                (push gap-symbol merged)))
+             ((and (> j 0)
+                   (= (mref d i j)
+                      (+ (mref d i (1- j))
+                         gap-penalty)))
+              (cl-assert (> j 0) t)
+              (cl-decf j)
+              (unless (eq (car merged)
+                          gap-symbol)
+                (push gap-symbol merged)))
+             (t
+              (cl-assert (and (> i 0) (> j 0)) t)
+              (cl-decf i)
+              (cl-decf j)
+              (let ((s1 (elt seq1 i))
+                    (s2 (elt seq2 j)))
+                (cl-assert (or (and (consp s1)
+                                    (consp s2))
+                               (equal s1 s2)))
+                (cond
+                 ((and (consp s1)
+                       (consp s2))
+                  (push
+                   (cdr
+                    (seq-merge
+                     s1 s2 similarity-fn gap-penalty))
+                   merged))
+                 ((equal s1 s2)
+                  (push s1 merged))
+                 ((not (eq (car merged) gap-symbol))
+                  (push gap-symbol merged)))))))
+          (cons (mref d len1 len2) merged))))))
+
+(defun bm ()
+  (interactive)
+  (progn
+    (garbage-collect)
+    (benchmark
+     1000
+     '(dolist (s1 sequences)
+        (dolist (s2 sequences)
+          (seq-alignment s1 s2 nil nil nil nil))))))
+
+(defun sa-rec-fn (elt1 elt2)
+  (cond
+   ((and (consp elt1)
+         (consp elt2))
+    (seq-alignment elt1 elt2 'sa-rec-fn nil nil nil))
+   ((equal elt1 elt2) 1)
+   (t -1)))
+
+(defun sa-rec ()
+  (let ((s1 '(list (symbol "defun")
+                   (symbol "seq" "-" "alignment")
+                   (list (symbol "seq1" "seq2" "flag"))))
+        (s2
+         '(list (symbol "defun")
+                (symbol "seq" "-" "something")
+                (list (symbol "seq1" "seq2")))))
+    (seq-merge s1 s2)))
+         
 (defun seq-upgma-test ()
   (seq--with-matrix-macros
    (let ((d [[nil nil nil nil nil nil nil]
