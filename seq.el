@@ -510,8 +510,11 @@ respective sequence in the alignment."
 (defun seq-merge (seq1 seq2 &optional
                        similarity-fn
                        gap-penalty
-                       score-only-p)
+                       score-only-p depth)
   ;; See https://en.wikipedia.org/wiki/Needleman-Wunsch_algorithm
+  (let ((max-depth 3))
+  (unless depth
+    (setq depth 0))
   (seq--with-matrix-macros
     (let* ((len1 (length seq1))
            (len2 (length seq2))
@@ -539,9 +542,10 @@ respective sequence in the alignment."
                          (let ((s1 (elt seq1 (1- i)))
                                (s2 (elt seq2 (1- j))))
                            (if (and (consp s1)
-                                    (consp s2))
+                                    (consp s2)
+                                    (< depth max-depth))
                                (seq-merge
-                                s1 s2 similarity-fn gap-penalty t)
+                                s1 s2 similarity-fn gap-penalty t (1+ depth))
                              (funcall similarity-fn s1 s2)))))))
             (mset d i j max))))
 
@@ -562,16 +566,18 @@ respective sequence in the alignment."
               (cl-decf i)
               (unless (eq (car merged)
                           gap-symbol)
-                (push gap-symbol merged)))
+                (push gap-symbol merged))
+              )
              ((and (> j 0)
                    (= (mref d i j)
                       (+ (mref d i (1- j))
                          gap-penalty)))
               (cl-assert (> j 0) t)
               (cl-decf j)
-              (unless (eq (car merged)
-                          gap-symbol)
-                (push gap-symbol merged)))
+              ;; (unless (eq (car merged)
+              ;;             gap-symbol)
+              ;;   (push gap-symbol merged))
+              )
              (t
               (cl-assert (and (> i 0) (> j 0)) t)
               (cl-decf i)
@@ -583,17 +589,18 @@ respective sequence in the alignment."
                                (equal s1 s2)))
                 (cond
                  ((and (consp s1)
-                       (consp s2))
+                       (consp s2)
+                       (< depth max-depth))
                   (push
                    (cdr
                     (seq-merge
-                     s1 s2 similarity-fn gap-penalty))
+                     s1 s2 similarity-fn gap-penalty nil (1+ depth)))
                    merged))
                  ((equal s1 s2)
                   (push s1 merged))
                  ((not (eq (car merged) gap-symbol))
                   (push gap-symbol merged)))))))
-          (cons (mref d len1 len2) merged))))))
+          (cons (mref d len1 len2) merged)))))))
 
 (defun bm ()
   (interactive)
@@ -845,19 +852,6 @@ respective sequence in the alignment."
         (ses-set-column-width col (+ (elt widths col))))
       (ses-command-hook)
       (pop-to-buffer (current-buffer)))))
-
-(setq sequences
-      (list
-       (split-string "if [ $# -ne 1 ]; then echo \"usage:eunalias NAME\" return 1; fi" " +" t)
-       (split-string "if [ $# -ne 1 ]; then echo \"usage:eunalias NAME\" return 1; fi" " +" t)
-       (split-string "if [ $# -gt 1 ]; then echo \"usage:$FUNCNAME [name]\" >&2 return 1 fi" " +" t)
-       (split-string "if [ $# -gt 1 ]; then echo \"usage:$FUNCNAME [name]\" >&2 return 1 fi" " +" t)
-       (split-string "if [ -z \"$spec\" ]; then echo \"No such alias: $name\" >&2 return 1 fi" " +" t)
-       (split-string "if [ -z \"$spec\" ]; then echo \"No such alias: $name\" >&2 return 1 fi" " +" t)
-       (split-string "if [ -z \"$spec\" ]; then echo \"No such alias: $name\" >&2 return 1; fi" " +" t)
-       (split-string "if [ -z \"$spec\" ]; then echo \"No such alias: $name\" >&2 return 1; fi" " +" t)
-       (split-string "if [ \"$fn\" == \"$spec\" ]; then eargs= fi" " +" t)
-       (split-string "if [ \"$fn\" == \"$spec\" ]; then eargs= fi" " +" t)))
 
 (defun seq-edit-distance (seq1 seq2 &optional
                                max-distance
